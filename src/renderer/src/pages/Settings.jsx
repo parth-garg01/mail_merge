@@ -123,7 +123,7 @@ export default function Settings() {
         <div className="card">
           <h3 className="text-sm font-semibold text-slate-200 mb-1">Google OAuth Credentials</h3>
           <p className="text-slate-500 text-xs mb-4">
-            Create credentials at <span className="text-indigo-400">console.cloud.google.com</span> → Enable Gmail API → OAuth 2.0 Client ID (Desktop App)
+            Create credentials at <span className="text-indigo-400">console.cloud.google.com</span> → Enable Gmail API → OAuth 2.0 Client ID (Web application) → Authorized redirect URI: http://localhost:3000/oauth2callback
           </p>
           <div className="space-y-3">
             <div>

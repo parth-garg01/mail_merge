@@ -1,5 +1,5 @@
 node_modules/
-.env
+.env.example
 credentials.json
 token.json
 *.log
@@ -9,3 +9,5 @@ out/
 .DS_Store
 Thumbs.db
 *.local
+*.xlsx
+
