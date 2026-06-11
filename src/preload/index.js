@@ -42,7 +42,8 @@ contextBridge.exposeInMainWorld('api', {
   queue: {
     get: campaignId => ipcRenderer.invoke('queue:get', campaignId),
     stats: campaignId => ipcRenderer.invoke('queue:stats', campaignId),
-    skip: params => ipcRenderer.invoke('queue:skip', params)
+    skip: params => ipcRenderer.invoke('queue:skip', params),
+    retry: params => ipcRenderer.invoke('queue:retry', params)
   },
 
   log: {

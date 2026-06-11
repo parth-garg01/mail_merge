@@ -45,6 +45,33 @@ class SendQueue {
     return null
   }
 
+  retryFailed(campaignId, recipientId) {
+    const queue = this.getQueue(campaignId)
+    const idx = queue.findIndex(r => r.id === recipientId)
+    if (idx === -1) return { success: false, error: 'Recipient not found.' }
+
+    const recipient = queue[idx]
+    if (recipient.status !== 'failed') {
+      return { success: false, error: 'Only failed recipients can be retried.' }
+    }
+
+    const email = String(recipient.email || '').toLowerCase()
+    const alreadySent = queue.some(r => r.id !== recipientId && String(r.email || '').toLowerCase() === email && r.status === 'sent')
+    if (alreadySent) {
+      return { success: false, error: 'This email address already has a sent message in this campaign.' }
+    }
+
+    queue[idx] = {
+      ...recipient,
+      status: 'pending',
+      sentAt: null,
+      errorMessage: null,
+      retryRequestedAt: new Date().toISOString()
+    }
+    store.set(`q.${campaignId}`, queue)
+    return { success: true, recipient: queue[idx] }
+  }
+
   getNext(campaignId) {
     const queue = this.getQueue(campaignId)
     return queue.find(r => r.status === 'pending') || null
@@ -62,6 +89,7 @@ class SendQueue {
       sent: queue.filter(r => r.status === 'sent').length,
       pending: queue.filter(r => r.status === 'pending').length,
       failed: queue.filter(r => r.status === 'failed').length,
+      sending: queue.filter(r => r.status === 'sending').length,
       skipped: queue.filter(r => r.status === 'skipped').length
     }
   }

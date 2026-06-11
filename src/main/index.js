@@ -245,6 +245,27 @@ ipcMain.handle('queue:skip', async (_, { campaignId, recipientId }) => {
   sendQueue.updateStatus(campaignId, recipientId, 'skipped', { errorMessage: 'Manually skipped' })
   return { success: true }
 })
+ipcMain.handle('queue:retry', async (_, { campaignId, recipientId }) => {
+  const result = sendQueue.retryFailed(campaignId, recipientId)
+  if (!result.success) return result
+
+  const campaigns = configStore.get('campaigns', {})
+  const campaign = campaigns[campaignId]
+  if (campaign && campaign.status !== 'running') {
+    campaign.status = 'running'
+    saveCampaign(campaign)
+  }
+
+  if (campaign && (!activeCampaigns[campaignId] || activeCampaigns[campaignId].stopped || activeCampaigns[campaignId].paused)) {
+    if (activeCampaigns[campaignId]) {
+      clearTimeout(activeCampaigns[campaignId].timeout)
+      delete activeCampaigns[campaignId]
+    }
+    runCampaign(campaignId, campaign)
+  }
+
+  return { ...result, stats: sendQueue.getStats(campaignId) }
+})
 
 // ─── Logs ─────────────────────────────────────────────────────────────────────
 
@@ -326,6 +347,7 @@ async function runCampaign(campaignId, campaign) {
 
     const subject = templateEngine.merge(campaign.subjectTemplate || '', recipient.fields)
     const body = templateEngine.merge(campaign.bodyTemplate || '', recipient.fields)
+    sendQueue.updateStatus(campaignId, recipient.id, 'sending')
 
     try {
       await gmailClient.send(recipient.email, subject, body)
