@@ -13,7 +13,27 @@ const logger = require('./Logger')
 const configStore = new Store({ name: 'app-config' })
 
 let mainWindow = null
-const activeCampaigns = {} // campaignId -> { paused, stopped, timeout }
+const activeCampaigns = {} // campaignId -> { paused, stopped, timeout, cfg, tick }
+
+function buildCfg(schedule) {
+  return {
+    allowedDays: schedule?.allowedDays || ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'],
+    windowStart: schedule?.windowStart || '00:00',
+    windowEnd: schedule?.windowEnd || '23:59',
+    intervalMinutes: Number(schedule?.intervalMinutes) || 5,
+    startAt: schedule?.startAt || null
+  }
+}
+
+const TRANSIENT_CODES = new Set(['ENOTFOUND', 'ECONNRESET', 'ETIMEDOUT', 'ECONNREFUSED', 'ENETUNREACH', 'EAI_AGAIN'])
+
+function isTransientError(err) {
+  if (TRANSIENT_CODES.has(err.code)) return true
+  const status = err?.response?.status || err?.status
+  if (status >= 500 && status < 600) return true
+  const msg = (err.message || '').toLowerCase()
+  return msg.includes('network') || msg.includes('enotfound') || msg.includes('timeout') || msg.includes('socket hang up')
+}
 
 // ─── Window ──────────────────────────────────────────────────────────────────
 
@@ -237,6 +257,25 @@ ipcMain.handle('campaign:stop', async (_, campaignId) => {
   return { success: true }
 })
 
+ipcMain.handle('campaign:updateSchedule', async (_, { campaignId, schedule }) => {
+  const campaigns = configStore.get('campaigns', {})
+  const campaign = campaigns[campaignId]
+  if (!campaign) return { success: false, error: 'Campaign not found' }
+
+  campaign.schedule = { ...campaign.schedule, ...schedule }
+  saveCampaign(campaign)
+
+  const ctx = activeCampaigns[campaignId]
+  if (ctx && !ctx.stopped) {
+    ctx.cfg = buildCfg(campaign.schedule)
+    // Wake up the runner so it immediately re-evaluates the new schedule
+    clearTimeout(ctx.timeout)
+    ctx.tick?.()
+  }
+
+  return { success: true, campaign }
+})
+
 // ─── Queue ────────────────────────────────────────────────────────────────────
 
 ipcMain.handle('queue:get', async (_, campaignId) => sendQueue.getQueue(campaignId))
@@ -301,20 +340,15 @@ ipcMain.handle('settings:save', async (_, settings) => {
 
 async function runCampaign(campaignId, campaign) {
   if (!activeCampaigns[campaignId]) {
-    activeCampaigns[campaignId] = { paused: false, stopped: false, timeout: null }
+    activeCampaigns[campaignId] = { paused: false, stopped: false, timeout: null, cfg: null, tick: null }
   }
   const ctx = activeCampaigns[campaignId]
-
-  const cfg = {
-    allowedDays: campaign.schedule?.allowedDays || ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'],
-    windowStart: campaign.schedule?.windowStart || '00:00',
-    windowEnd: campaign.schedule?.windowEnd || '23:59',
-    intervalMinutes: Number(campaign.schedule?.intervalMinutes) || 5,
-    startAt: campaign.schedule?.startAt || null
-  }
+  ctx.cfg = buildCfg(campaign.schedule)
 
   const tick = async () => {
     if (ctx.stopped || ctx.paused) return
+
+    const cfg = ctx.cfg  // always read latest — may be updated by campaign:updateSchedule
 
     // Wait for scheduled start time
     if (!scheduleController.isCampaignStartTimeReached(cfg.startAt)) {
@@ -356,18 +390,32 @@ async function runCampaign(campaignId, campaign) {
       })
       logger.log(campaignId, { email: recipient.email, subject, status: 'sent', errorMessage: null })
       notify('campaign:sent', { campaignId, recipient: updated, stats: sendQueue.getStats(campaignId) })
-    } catch (err) {
-      const updated = sendQueue.updateStatus(campaignId, recipient.id, 'failed', {
-        errorMessage: err.message
-      })
-      logger.log(campaignId, { email: recipient.email, subject, status: 'failed', errorMessage: err.message })
-      notify('campaign:failed', { campaignId, recipient: updated, error: err.message })
-    }
 
-    const intervalMs = scheduleController.addJitter(cfg.intervalMinutes * 60 * 1000)
-    notify('campaign:nextSend', { campaignId, nextSendAt: Date.now() + intervalMs })
-    ctx.timeout = setTimeout(tick, intervalMs)
+      const intervalMs = scheduleController.addJitter(cfg.intervalMinutes * 60 * 1000)
+      notify('campaign:nextSend', { campaignId, nextSendAt: Date.now() + intervalMs })
+      ctx.timeout = setTimeout(tick, intervalMs)
+    } catch (err) {
+      if (isTransientError(err)) {
+        // Network/connectivity issue — reset to pending and retry after 2 min
+        sendQueue.updateStatus(campaignId, recipient.id, 'pending')
+        const retryMs = 2 * 60 * 1000
+        notify('campaign:waiting', { campaignId, msToWait: retryMs, reason: 'No internet — will retry automatically' })
+        ctx.timeout = setTimeout(tick, retryMs)
+      } else {
+        // Permanent failure (bad auth, invalid address, API rejection, etc.)
+        const updated = sendQueue.updateStatus(campaignId, recipient.id, 'failed', {
+          errorMessage: err.message
+        })
+        logger.log(campaignId, { email: recipient.email, subject, status: 'failed', errorMessage: err.message })
+        notify('campaign:failed', { campaignId, recipient: updated, error: err.message })
+
+        const intervalMs = scheduleController.addJitter(cfg.intervalMinutes * 60 * 1000)
+        notify('campaign:nextSend', { campaignId, nextSendAt: Date.now() + intervalMs })
+        ctx.timeout = setTimeout(tick, intervalMs)
+      }
+    }
   }
 
+  ctx.tick = tick
   tick()
 }

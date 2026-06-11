@@ -36,7 +36,8 @@ contextBridge.exposeInMainWorld('api', {
     start: id => ipcRenderer.invoke('campaign:start', id),
     pause: id => ipcRenderer.invoke('campaign:pause', id),
     resume: id => ipcRenderer.invoke('campaign:resume', id),
-    stop: id => ipcRenderer.invoke('campaign:stop', id)
+    stop: id => ipcRenderer.invoke('campaign:stop', id),
+    updateSchedule: params => ipcRenderer.invoke('campaign:updateSchedule', params)
   },
 
   queue: {
