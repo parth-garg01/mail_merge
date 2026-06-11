@@ -13,6 +13,9 @@ function formatMs(ms) {
   return `${s}s`
 }
 
+const ALL_DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
+const DEFAULT_SCHED = { startAt: '', windowStart: '08:00', windowEnd: '15:00', allowedDays: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'], intervalMinutes: 5 }
+
 export default function CampaignMonitor() {
   const { activeCampaignId, navigate } = useApp()
   const [campaign, setCampaign] = useState(null)
@@ -23,6 +26,10 @@ export default function CampaignMonitor() {
   const [countdown, setCountdown] = useState(0)
   const [waitMsg, setWaitMsg] = useState('')
   const [filter, setFilter] = useState('all')
+  const [editingSchedule, setEditingSchedule] = useState(false)
+  const [schedForm, setSchedForm] = useState(DEFAULT_SCHED)
+  const [schedSaving, setSchedSaving] = useState(false)
+  const [schedError, setSchedError] = useState('')
 
   const load = useCallback(async () => {
     if (!activeCampaignId) return
@@ -31,10 +38,13 @@ export default function CampaignMonitor() {
       window.api?.queue.get(activeCampaignId),
       window.api?.queue.stats(activeCampaignId)
     ])
-    if (c) setCampaign(c)
+    if (c) {
+      setCampaign(c)
+      setSchedForm(prev => editingSchedule ? prev : { ...DEFAULT_SCHED, ...c.schedule })
+    }
     if (q) setQueue(q)
     if (s) setStats(s)
-  }, [activeCampaignId])
+  }, [activeCampaignId]) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     load()
@@ -105,6 +115,23 @@ export default function CampaignMonitor() {
     load()
   }
 
+  async function handleSaveSchedule() {
+    if (schedForm.allowedDays.length === 0) {
+      setSchedError('Select at least one allowed day.')
+      return
+    }
+    setSchedSaving(true)
+    setSchedError('')
+    const result = await window.api?.campaign.updateSchedule({ campaignId: activeCampaignId, schedule: schedForm })
+    setSchedSaving(false)
+    if (!result?.success) {
+      setSchedError(result?.error || 'Could not save schedule.')
+      return
+    }
+    setEditingSchedule(false)
+    load()
+  }
+
   const filtered = filter === 'all' ? queue : queue.filter(r => r.status === filter)
   const isRunning = campaign?.status === 'running'
   const isPaused = campaign?.status === 'paused'
@@ -145,6 +172,14 @@ export default function CampaignMonitor() {
           {(isRunning || isPaused) && (
             <button onClick={handleStop} className="btn-danger">■ Stop</button>
           )}
+          {campaign?.status !== 'completed' && (
+            <button
+              onClick={() => { setEditingSchedule(v => !v); setSchedError('') }}
+              className="btn-secondary"
+            >
+              {editingSchedule ? 'Cancel' : 'Edit Schedule'}
+            </button>
+          )}
           <button onClick={() => { navigate('logs'); }} className="btn-secondary">View Logs</button>
         </div>
       </div>
@@ -173,6 +208,100 @@ export default function CampaignMonitor() {
           </p>
         )}
       </div>
+
+      {/* Inline schedule editor */}
+      {editingSchedule && (
+        <div className="card mb-6 space-y-4">
+          <h3 className="text-sm font-semibold text-slate-200">Edit Schedule</h3>
+
+          {/* Start date/time */}
+          <div>
+            <label className="label">Scheduled Start Date &amp; Time</label>
+            <input
+              type="datetime-local"
+              value={schedForm.startAt}
+              onChange={e => setSchedForm(f => ({ ...f, startAt: e.target.value }))}
+              className="input-field"
+            />
+            <p className="text-slate-500 text-xs mt-1">Clear to start / resume immediately</p>
+          </div>
+
+          {/* Daily window */}
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="label">Window Start</label>
+              <input
+                type="time"
+                value={schedForm.windowStart}
+                onChange={e => setSchedForm(f => ({ ...f, windowStart: e.target.value }))}
+                className="input-field"
+              />
+            </div>
+            <div>
+              <label className="label">Window End</label>
+              <input
+                type="time"
+                value={schedForm.windowEnd}
+                onChange={e => setSchedForm(f => ({ ...f, windowEnd: e.target.value }))}
+                className="input-field"
+              />
+            </div>
+          </div>
+
+          {/* Allowed days */}
+          <div>
+            <label className="label">Allowed Days</label>
+            <div className="flex gap-2 mt-1">
+              {ALL_DAYS.map(day => {
+                const active = schedForm.allowedDays.includes(day)
+                return (
+                  <button
+                    key={day}
+                    type="button"
+                    onClick={() => setSchedForm(f => ({
+                      ...f,
+                      allowedDays: active
+                        ? f.allowedDays.filter(d => d !== day)
+                        : [...f.allowedDays, day]
+                    }))}
+                    className={`w-10 h-10 rounded-lg text-xs font-medium transition-colors ${
+                      active ? 'bg-indigo-600 text-white' : 'bg-slate-700 text-slate-400 hover:bg-slate-600'
+                    }`}
+                  >
+                    {day}
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+
+          {/* Interval */}
+          <div>
+            <label className="label">Interval — {schedForm.intervalMinutes} min</label>
+            <input
+              type="range"
+              min="1"
+              max="60"
+              value={schedForm.intervalMinutes}
+              onChange={e => setSchedForm(f => ({ ...f, intervalMinutes: Number(e.target.value) }))}
+              className="w-full accent-indigo-500"
+            />
+          </div>
+
+          {schedError && <p className="text-red-400 text-xs">{schedError}</p>}
+
+          <div className="flex gap-3 pt-1">
+            <button
+              onClick={handleSaveSchedule}
+              disabled={schedSaving}
+              className="btn-primary"
+            >
+              {schedSaving ? 'Saving…' : 'Save Schedule'}
+            </button>
+            <button onClick={() => setEditingSchedule(false)} className="btn-secondary">Cancel</button>
+          </div>
+        </div>
+      )}
 
       {/* Queue table */}
       <div className="card p-0 overflow-hidden">
