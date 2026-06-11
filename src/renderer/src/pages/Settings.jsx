@@ -11,8 +11,17 @@ export default function Settings() {
   const [connecting, setConnecting] = useState(false)
   const [authMsg, setAuthMsg] = useState('')
 
+  // Password state
+  const [hasPassword, setHasPassword] = useState(false)
+  const [pwdCurrent, setPwdCurrent] = useState('')
+  const [pwdNew, setPwdNew] = useState('')
+  const [pwdConfirm, setPwdConfirm] = useState('')
+  const [pwdMsg, setPwdMsg] = useState('')
+  const [pwdSaving, setPwdSaving] = useState(false)
+
   useEffect(() => {
     window.api?.settings.get().then(s => setSettings(s || {}))
+    window.api?.auth.status().then(({ hasPassword }) => setHasPassword(hasPassword))
   }, [])
 
   function update(patch) {
@@ -74,6 +83,39 @@ export default function Settings() {
     const status = await window.api?.gmail.status()
     setGmailStatus(status)
     setAuthMsg('Gmail account disconnected.')
+  }
+
+  function pwdFlash(msg, ok = false) {
+    setPwdMsg({ text: msg, ok })
+    setTimeout(() => setPwdMsg(''), 4000)
+  }
+
+  async function handleSetPassword() {
+    if (pwdNew !== pwdConfirm) { pwdFlash('Passwords do not match.'); return }
+    setPwdSaving(true)
+    const result = await window.api?.auth.setPassword({ currentPassword: pwdCurrent, newPassword: pwdNew })
+    setPwdSaving(false)
+    if (result?.success) {
+      setHasPassword(true)
+      setPwdCurrent(''); setPwdNew(''); setPwdConfirm('')
+      pwdFlash(hasPassword ? 'Password changed.' : 'Password set.', true)
+    } else {
+      pwdFlash(result?.error || 'Failed.')
+    }
+  }
+
+  async function handleRemovePassword() {
+    if (!confirm('Remove app password?')) return
+    setPwdSaving(true)
+    const result = await window.api?.auth.removePassword({ currentPassword: pwdCurrent })
+    setPwdSaving(false)
+    if (result?.success) {
+      setHasPassword(false)
+      setPwdCurrent(''); setPwdNew(''); setPwdConfirm('')
+      pwdFlash('Password removed.', true)
+    } else {
+      pwdFlash(result?.error || 'Failed.')
+    }
   }
 
   if (!settings) return <div className="p-8 text-slate-500">Loading settings…</div>
@@ -204,6 +246,76 @@ export default function Settings() {
               onChange={e => update({ defaultInterval: Number(e.target.value) })}
               className="input-field w-24"
             />
+          </div>
+        </div>
+
+        {/* App password */}
+        <div className="card">
+          <div className="flex items-center gap-2 mb-1">
+            <h3 className="text-sm font-semibold text-slate-200">App Password</h3>
+            {hasPassword && (
+              <span className="text-xs bg-green-900/40 text-green-400 border border-green-700/40 px-2 py-0.5 rounded-full">Active</span>
+            )}
+          </div>
+          <p className="text-slate-500 text-xs mb-4">
+            {hasPassword
+              ? 'A password is required to open this app. Enter current password to change or remove it.'
+              : 'Lock the app with a password. You will be prompted on every launch.'}
+          </p>
+          <div className="space-y-3">
+            {hasPassword && (
+              <div>
+                <label className="label">Current Password</label>
+                <input
+                  type="password"
+                  value={pwdCurrent}
+                  onChange={e => setPwdCurrent(e.target.value)}
+                  placeholder="Enter current password"
+                  className="input-field"
+                />
+              </div>
+            )}
+            <div>
+              <label className="label">{hasPassword ? 'New Password' : 'Password'}</label>
+              <input
+                type="password"
+                value={pwdNew}
+                onChange={e => setPwdNew(e.target.value)}
+                placeholder="At least 4 characters"
+                className="input-field"
+              />
+            </div>
+            <div>
+              <label className="label">Confirm Password</label>
+              <input
+                type="password"
+                value={pwdConfirm}
+                onChange={e => setPwdConfirm(e.target.value)}
+                placeholder="Repeat password"
+                className="input-field"
+              />
+            </div>
+          </div>
+          {pwdMsg && (
+            <p className={`text-xs mt-3 ${pwdMsg.ok ? 'text-green-400' : 'text-red-400'}`}>{pwdMsg.text}</p>
+          )}
+          <div className="flex gap-2 mt-4">
+            <button
+              onClick={handleSetPassword}
+              disabled={pwdSaving || !pwdNew || !pwdConfirm}
+              className="btn-primary"
+            >
+              {pwdSaving ? 'Saving…' : hasPassword ? 'Change Password' : 'Set Password'}
+            </button>
+            {hasPassword && (
+              <button
+                onClick={handleRemovePassword}
+                disabled={pwdSaving || !pwdCurrent}
+                className="btn-danger"
+              >
+                Remove Password
+              </button>
+            )}
           </div>
         </div>
 

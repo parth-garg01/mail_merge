@@ -9,6 +9,13 @@ const VALID_EVENTS = [
 ]
 
 contextBridge.exposeInMainWorld('api', {
+  auth: {
+    status: () => ipcRenderer.invoke('auth:status'),
+    unlock: password => ipcRenderer.invoke('auth:unlock', password),
+    setPassword: params => ipcRenderer.invoke('auth:setPassword', params),
+    removePassword: params => ipcRenderer.invoke('auth:removePassword', params)
+  },
+
   sheet: {
     openDialog: () => ipcRenderer.invoke('sheet:openDialog'),
     parse: filePath => ipcRenderer.invoke('sheet:parse', filePath),

@@ -7,6 +7,7 @@ import ScheduleConfig from './pages/ScheduleConfig'
 import CampaignMonitor from './pages/CampaignMonitor'
 import Logs from './pages/Logs'
 import Settings from './pages/Settings'
+import LockScreen from './pages/LockScreen'
 
 export const AppContext = createContext(null)
 export const useApp = () => useContext(AppContext)
@@ -32,9 +33,13 @@ export default function App() {
   const [activeCampaignId, setActiveCampaignId] = useState(null)
   const [gmailStatus, setGmailStatus] = useState({ authenticated: false, email: null })
   const [wizard, setWizard] = useState(DEFAULT_WIZARD)
+  const [isLocked, setIsLocked] = useState(false)
 
   useEffect(() => {
     window.api?.gmail.status().then(setGmailStatus)
+    window.api?.auth.status().then(({ hasPassword }) => {
+      if (hasPassword) setIsLocked(true)
+    })
   }, [])
 
   function resetWizard() {
@@ -68,6 +73,10 @@ export default function App() {
   }
 
   const Page = PAGES[page] || Dashboard
+
+  if (isLocked) {
+    return <LockScreen onUnlock={() => setIsLocked(false)} />
+  }
 
   return (
     <AppContext.Provider value={ctx}>

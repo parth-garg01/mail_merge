@@ -1,5 +1,6 @@
 const { app, BrowserWindow, ipcMain, dialog } = require('electron')
 const path = require('path')
+const crypto = require('crypto')
 const Store = require('electron-store')
 const { v4: uuidv4 } = require('uuid')
 
@@ -94,6 +95,44 @@ function saveCampaign(campaign) {
   campaigns[campaign.id] = { ...campaign, updatedAt: new Date().toISOString() }
   configStore.set('campaigns', campaigns)
 }
+
+// ─── Auth (app password) ──────────────────────────────────────────────────────
+
+function hashPwd(password) {
+  return crypto.createHash('sha256').update(String(password)).digest('hex')
+}
+
+ipcMain.handle('auth:status', async () => ({
+  hasPassword: !!configStore.get('appPasswordHash')
+}))
+
+ipcMain.handle('auth:unlock', async (_, password) => {
+  const stored = configStore.get('appPasswordHash')
+  if (!stored) return { success: true }
+  return { success: hashPwd(password) === stored }
+})
+
+ipcMain.handle('auth:setPassword', async (_, { currentPassword, newPassword }) => {
+  const stored = configStore.get('appPasswordHash')
+  if (stored && hashPwd(currentPassword) !== stored) {
+    return { success: false, error: 'Current password is incorrect.' }
+  }
+  if (!newPassword || newPassword.length < 4) {
+    return { success: false, error: 'Password must be at least 4 characters.' }
+  }
+  configStore.set('appPasswordHash', hashPwd(newPassword))
+  return { success: true }
+})
+
+ipcMain.handle('auth:removePassword', async (_, { currentPassword }) => {
+  const stored = configStore.get('appPasswordHash')
+  if (!stored) return { success: true }
+  if (hashPwd(currentPassword) !== stored) {
+    return { success: false, error: 'Incorrect password.' }
+  }
+  configStore.delete('appPasswordHash')
+  return { success: true }
+})
 
 // ─── Sheet ────────────────────────────────────────────────────────────────────
 
