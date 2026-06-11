@@ -33,13 +33,12 @@ export default function App() {
   const [activeCampaignId, setActiveCampaignId] = useState(null)
   const [gmailStatus, setGmailStatus] = useState({ authenticated: false, email: null })
   const [wizard, setWizard] = useState(DEFAULT_WIZARD)
-  const [isLocked, setIsLocked] = useState(false)
+  // null = auth check not yet returned; true/false = result known
+  const [isLocked, setIsLocked] = useState(null)
 
   useEffect(() => {
     window.api?.gmail.status().then(setGmailStatus)
-    window.api?.auth.status().then(({ hasPassword }) => {
-      if (hasPassword) setIsLocked(true)
-    })
+    window.api?.auth.status().then(({ hasPassword }) => setIsLocked(hasPassword))
   }, [])
 
   function resetWizard() {
@@ -74,9 +73,9 @@ export default function App() {
 
   const Page = PAGES[page] || Dashboard
 
-  if (isLocked) {
-    return <LockScreen onUnlock={() => setIsLocked(false)} />
-  }
+  // Block render until we know whether a password is set (prevents content flash)
+  if (isLocked === null) return <div className="h-screen bg-slate-900" />
+  if (isLocked) return <LockScreen onUnlock={() => setIsLocked(false)} />
 
   return (
     <AppContext.Provider value={ctx}>
