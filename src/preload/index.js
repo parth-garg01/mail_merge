@@ -5,7 +5,9 @@ const VALID_EVENTS = [
   'campaign:failed',
   'campaign:complete',
   'campaign:waiting',
-  'campaign:nextSend'
+  'campaign:nextSend',
+  'campaign:schedule-progress',
+  'campaign:scheduled'
 ]
 
 contextBridge.exposeInMainWorld('api', {

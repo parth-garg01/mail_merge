@@ -62,6 +62,7 @@ class GmailClient {
         access_type: 'offline',
         scope: [
           'https://www.googleapis.com/auth/gmail.send',
+          'https://www.googleapis.com/auth/gmail.modify',
           'https://www.googleapis.com/auth/userinfo.email'
         ],
         prompt: 'consent'
@@ -160,7 +161,6 @@ class GmailClient {
     if (!this.isAuthenticated()) throw new Error('Not authenticated. Please connect Gmail first.')
     if (!this.oauth2Client) throw new Error('GmailClient not initialized.')
 
-    // Ensure token is fresh
     await this.oauth2Client.getAccessToken()
 
     const from = this.getConnectedEmail() || 'me'
@@ -173,6 +173,36 @@ class GmailClient {
     })
 
     return response.data
+  }
+
+  // Schedule a send via Gmail's native scheduled-send feature.
+  // sendAtIso must be an RFC3339 UTC string at least ~5 min in the future.
+  async scheduleSend(to, subject, body, sendAtIso) {
+    if (!this.isAuthenticated()) throw new Error('Not authenticated. Please connect Gmail first.')
+    if (!this.oauth2Client) throw new Error('GmailClient not initialized.')
+
+    await this.oauth2Client.getAccessToken()
+
+    const from = this.getConnectedEmail() || 'me'
+    const gmail = google.gmail({ version: 'v1', auth: this.oauth2Client })
+    const raw = this._buildRawMessage(from, to, subject, body)
+
+    const response = await gmail.users.messages.send({
+      userId: 'me',
+      requestBody: { raw, scheduledSendTime: sendAtIso }
+    })
+
+    return response.data  // { id, threadId, labelIds, ... }
+  }
+
+  // Trash a previously scheduled message to cancel it.
+  async cancelScheduled(messageId) {
+    if (!this.isAuthenticated() || !this.oauth2Client || !messageId) return
+    try {
+      await this.oauth2Client.getAccessToken()
+      const gmail = google.gmail({ version: 'v1', auth: this.oauth2Client })
+      await gmail.users.messages.trash({ userId: 'me', id: messageId })
+    } catch {}
   }
 }
 

@@ -248,9 +248,9 @@ ipcMain.handle('campaign:start', async (_, campaignId) => {
   const campaign = campaigns[campaignId]
   if (!campaign) return { success: false, error: 'Campaign not found' }
 
-  campaign.status = 'running'
+  campaign.status = 'scheduling'
   saveCampaign(campaign)
-  runCampaign(campaignId, campaign)
+  scheduleAllEmails(campaignId, campaign)  // fire-and-forget; progress via IPC events
   return { success: true }
 })
 
@@ -283,11 +283,21 @@ ipcMain.handle('campaign:resume', async (_, campaignId) => {
 })
 
 ipcMain.handle('campaign:stop', async (_, campaignId) => {
+  // Legacy timer-based campaign cleanup
   if (activeCampaigns[campaignId]) {
     activeCampaigns[campaignId].stopped = true
     clearTimeout(activeCampaigns[campaignId].timeout)
     delete activeCampaigns[campaignId]
   }
+
+  // Cancel all Gmail-scheduled messages and reset recipients to pending
+  const queue = sendQueue.getQueue(campaignId)
+  const scheduled = queue.filter(r => r.status === 'scheduled' && r.gmailMessageId)
+  for (const r of scheduled) {
+    await gmailClient.cancelScheduled(r.gmailMessageId)
+    sendQueue.updateStatus(campaignId, r.id, 'pending', { scheduledTime: null, gmailMessageId: null })
+  }
+
   const campaigns = configStore.get('campaigns', {})
   if (campaigns[campaignId]) {
     campaigns[campaignId].status = 'stopped'
@@ -320,20 +330,43 @@ ipcMain.handle('campaign:updateSchedule', async (_, { campaignId, schedule }) =>
 ipcMain.handle('queue:get', async (_, campaignId) => sendQueue.getQueue(campaignId))
 ipcMain.handle('queue:stats', async (_, campaignId) => sendQueue.getStats(campaignId))
 ipcMain.handle('queue:skip', async (_, { campaignId, recipientId }) => {
-  sendQueue.updateStatus(campaignId, recipientId, 'skipped', { errorMessage: 'Manually skipped' })
+  const queue = sendQueue.getQueue(campaignId)
+  const recipient = queue.find(r => r.id === recipientId)
+  if (recipient?.gmailMessageId) await gmailClient.cancelScheduled(recipient.gmailMessageId)
+  sendQueue.updateStatus(campaignId, recipientId, 'skipped', { errorMessage: 'Manually skipped', gmailMessageId: null })
   return { success: true }
 })
+
 ipcMain.handle('queue:retry', async (_, { campaignId, recipientId }) => {
   const result = sendQueue.retryFailed(campaignId, recipientId)
   if (!result.success) return result
 
   const campaigns = configStore.get('campaigns', {})
   const campaign = campaigns[campaignId]
+
+  if (campaign?.status === 'scheduled') {
+    // Re-schedule this one recipient in Gmail ASAP
+    const [nextTime] = scheduleController.calcSendTimes(1, { ...campaign.schedule, startAt: '' })
+    const subject = templateEngine.merge(campaign.subjectTemplate || '', result.recipient.fields)
+    const body = templateEngine.merge(campaign.bodyTemplate || '', result.recipient.fields)
+    try {
+      const msgData = await gmailClient.scheduleSend(result.recipient.email, subject, body, nextTime.toISOString())
+      const updated = sendQueue.updateStatus(campaignId, recipientId, 'scheduled', {
+        scheduledTime: nextTime.toISOString(),
+        gmailMessageId: msgData.id
+      })
+      return { success: true, recipient: updated, stats: sendQueue.getStats(campaignId) }
+    } catch (err) {
+      sendQueue.updateStatus(campaignId, recipientId, 'failed', { errorMessage: err.message })
+      return { success: false, error: err.message }
+    }
+  }
+
+  // Legacy timer-based campaign
   if (campaign && campaign.status !== 'running') {
     campaign.status = 'running'
     saveCampaign(campaign)
   }
-
   if (campaign && (!activeCampaigns[campaignId] || activeCampaigns[campaignId].stopped || activeCampaigns[campaignId].paused)) {
     if (activeCampaigns[campaignId]) {
       clearTimeout(activeCampaigns[campaignId].timeout)
@@ -341,7 +374,6 @@ ipcMain.handle('queue:retry', async (_, { campaignId, recipientId }) => {
     }
     runCampaign(campaignId, campaign)
   }
-
   return { ...result, stats: sendQueue.getStats(campaignId) }
 })
 
@@ -375,7 +407,60 @@ ipcMain.handle('settings:save', async (_, settings) => {
   return { success: true }
 })
 
-// ─── Campaign Runner ──────────────────────────────────────────────────────────
+// ─── Gmail Scheduler ─────────────────────────────────────────────────────────
+
+async function scheduleAllEmails(campaignId, campaign) {
+  const queue = sendQueue.getQueue(campaignId)
+  const pending = queue.filter(r => r.status === 'pending')
+
+  if (pending.length === 0) {
+    const campaigns = configStore.get('campaigns', {})
+    if (campaigns[campaignId]) { campaigns[campaignId].status = 'scheduled'; saveCampaign(campaigns[campaignId]) }
+    notify('campaign:scheduled', { campaignId, successCount: 0, failCount: 0 })
+    return
+  }
+
+  const sendTimes = scheduleController.calcSendTimes(pending.length, campaign.schedule)
+  let successCount = 0
+  let failCount = 0
+
+  for (let i = 0; i < pending.length; i++) {
+    const recipient = pending[i]
+    const sendAt = sendTimes[i]
+    const subject = templateEngine.merge(campaign.subjectTemplate || '', recipient.fields)
+    const body = templateEngine.merge(campaign.bodyTemplate || '', recipient.fields)
+
+    try {
+      const msgData = await gmailClient.scheduleSend(
+        recipient.email, subject, body, sendAt.toISOString()
+      )
+      sendQueue.updateStatus(campaignId, recipient.id, 'scheduled', {
+        scheduledTime: sendAt.toISOString(),
+        gmailMessageId: msgData.id
+      })
+      successCount++
+    } catch (err) {
+      sendQueue.updateStatus(campaignId, recipient.id, 'failed', {
+        errorMessage: `Schedule failed: ${err.message}`
+      })
+      logger.log(campaignId, { email: recipient.email, subject, status: 'failed', errorMessage: err.message })
+      failCount++
+    }
+
+    notify('campaign:schedule-progress', { campaignId, done: i + 1, total: pending.length })
+
+    if (i < pending.length - 1) await new Promise(r => setTimeout(r, 250)) // stay under quota
+  }
+
+  const campaigns = configStore.get('campaigns', {})
+  if (campaigns[campaignId]) {
+    campaigns[campaignId].status = failCount === pending.length ? 'failed' : 'scheduled'
+    saveCampaign(campaigns[campaignId])
+  }
+  notify('campaign:scheduled', { campaignId, successCount, failCount })
+}
+
+// ─── Campaign Runner (legacy timer-based — kept for backwards compat) ─────────
 
 async function runCampaign(campaignId, campaign) {
   if (!activeCampaigns[campaignId]) {
