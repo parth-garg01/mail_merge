@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react'
+import React, { useState, useEffect, useCallback, useMemo } from 'react'
 import { useApp } from '../App'
 import StatusBadge from '../components/StatusBadge'
 import ProgressBar from '../components/ProgressBar'
@@ -11,6 +11,16 @@ function formatMs(ms) {
   if (h > 0) return `${h}h ${m}m`
   if (m > 0) return `${m}m ${s}s`
   return `${s}s`
+}
+
+function fmtScheduled(ts) {
+  if (ts === null) return '—'
+  if (ts === 'now') return 'Sending now'
+  const diff = ts - Date.now()
+  if (diff <= 0) return 'Any moment'
+  if (diff < 60000) return 'in <1 min'
+  if (diff < 3600000) return `in ${Math.round(diff / 60000)} min`
+  return new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
 }
 
 const ALL_DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
@@ -131,6 +141,25 @@ export default function CampaignMonitor() {
     setEditingSchedule(false)
     load()
   }
+
+  // Build a map of estimated send times for each recipient
+  const scheduledForMap = useMemo(() => {
+    const intervalMs = (campaign?.schedule?.intervalMinutes || 5) * 60 * 1000
+    const base = nextSendAt || Date.now()
+    const map = {}
+    let pendingOffset = 0
+    for (const r of queue) {
+      if (r.status === 'sending') {
+        map[r.id] = 'now'
+      } else if (r.status === 'pending') {
+        map[r.id] = base + pendingOffset * intervalMs
+        pendingOffset++
+      } else {
+        map[r.id] = null
+      }
+    }
+    return map
+  }, [queue, nextSendAt, campaign?.schedule?.intervalMinutes])
 
   const filtered = filter === 'all' ? queue : queue.filter(r => r.status === filter)
   const isRunning = campaign?.status === 'running'
@@ -330,6 +359,7 @@ export default function CampaignMonitor() {
               <tr className="border-b border-slate-700">
                 <th className="text-left text-slate-400 font-medium px-5 py-2">Email</th>
                 <th className="text-left text-slate-400 font-medium px-4 py-2">Status</th>
+                <th className="text-left text-slate-400 font-medium px-4 py-2">Scheduled For</th>
                 <th className="text-left text-slate-400 font-medium px-4 py-2">Sent At</th>
                 <th className="text-left text-slate-400 font-medium px-4 py-2">Error</th>
                 <th className="px-4 py-2" />
@@ -340,6 +370,16 @@ export default function CampaignMonitor() {
                 <tr key={r.id} className="border-b border-slate-700/40 last:border-0 hover:bg-slate-700/20">
                   <td className="px-5 py-2.5 text-slate-300 font-medium">{r.email}</td>
                   <td className="px-4 py-2.5"><StatusBadge status={r.status} /></td>
+                  <td className="px-4 py-2.5 text-slate-400 whitespace-nowrap">
+                    {scheduledForMap[r.id] === 'now'
+                      ? <span className="text-indigo-400 font-medium">Sending now</span>
+                      : scheduledForMap[r.id]
+                        ? <span className={scheduledForMap[r.id] - Date.now() < 300000 ? 'text-amber-400' : 'text-slate-400'}>
+                            {fmtScheduled(scheduledForMap[r.id])}
+                          </span>
+                        : <span className="text-slate-600">—</span>
+                    }
+                  </td>
                   <td className="px-4 py-2.5 text-slate-500">
                     {r.sentAt ? new Date(r.sentAt).toLocaleTimeString() : '—'}
                   </td>
@@ -368,7 +408,7 @@ export default function CampaignMonitor() {
               ))}
               {filtered.length === 0 && (
                 <tr>
-                  <td colSpan={5} className="px-5 py-8 text-center text-slate-500">
+                  <td colSpan={6} className="px-5 py-8 text-center text-slate-500">
                     No recipients with status "{filter}"
                   </td>
                 </tr>
