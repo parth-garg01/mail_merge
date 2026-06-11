@@ -10,23 +10,34 @@ export default function ImportSheet() {
   async function openFile() {
     setError('')
     setValidationResult(null)
-    const filePath = await window.api?.sheet.openDialog()
-    if (!filePath) return
 
-    setLoading(true)
-    const result = await window.api?.sheet.parse(filePath)
-    setLoading(false)
-
-    if (!result.success) {
-      setError(result.error)
+    if (!window.api?.sheet?.openDialog || !window.api?.sheet?.parse) {
+      setError('File picker is unavailable. Please run the app through Electron, not in a browser tab.')
       return
     }
 
-    updateWizard({
-      sheetPath: filePath,
-      sheetData: result.data,
-      emailColumn: result.data.headers.find(h => h.toLowerCase().includes('email')) || result.data.headers[0] || ''
-    })
+    setLoading(true)
+    try {
+      const filePath = await window.api.sheet.openDialog()
+      if (!filePath) return
+
+      const result = await window.api.sheet.parse(filePath)
+
+      if (!result.success) {
+        setError(result.error)
+        return
+      }
+
+      updateWizard({
+        sheetPath: filePath,
+        sheetData: result.data,
+        emailColumn: result.data.headers.find(h => h.toLowerCase().includes('email')) || result.data.headers[0] || ''
+      })
+    } catch (err) {
+      setError(err.message || 'Could not open the spreadsheet picker.')
+    } finally {
+      setLoading(false)
+    }
   }
 
   async function handleEmailColumnChange(col) {
@@ -63,9 +74,15 @@ export default function ImportSheet() {
 
       {/* Upload area */}
       {!sheetData ? (
-        <div className="card flex flex-col items-center justify-center py-16 border-dashed cursor-pointer hover:border-indigo-500 hover:bg-indigo-500/5 transition-colors" onClick={openFile}>
+        <>
+        <button
+          type="button"
+          disabled={loading}
+          className="card w-full flex flex-col items-center justify-center py-16 border-dashed cursor-pointer hover:border-indigo-500 hover:bg-indigo-500/5 transition-colors disabled:cursor-wait disabled:opacity-70"
+          onClick={openFile}
+        >
           {loading ? (
-            <div className="text-slate-400">Parsing file…</div>
+            <div className="text-slate-400">Opening file picker...</div>
           ) : (
             <>
               <div className="w-14 h-14 bg-slate-700 rounded-full flex items-center justify-center mb-4">
@@ -77,7 +94,11 @@ export default function ImportSheet() {
               <p className="text-slate-500 text-sm mt-1">Supports .xlsx, .xls, .csv</p>
             </>
           )}
-        </div>
+        </button>
+        {error && (
+          <div className="mt-4 p-3 bg-red-900/30 border border-red-700/50 rounded-lg text-red-300 text-sm">{error}</div>
+        )}
+        </>
       ) : (
         <>
           {/* File info */}

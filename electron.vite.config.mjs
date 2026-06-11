@@ -6,7 +6,15 @@ export default defineConfig({
     plugins: [externalizeDepsPlugin()],
     build: {
       rollupOptions: {
-        input: { index: 'src/main/index.js' }
+        input: {
+          index: 'src/main/index.js',
+          SheetParser: 'src/main/SheetParser.js',
+          TemplateEngine: 'src/main/TemplateEngine.js',
+          ScheduleController: 'src/main/ScheduleController.js',
+          SendQueue: 'src/main/SendQueue.js',
+          GmailClient: 'src/main/GmailClient.js',
+          Logger: 'src/main/Logger.js'
+        }
       }
     }
   },

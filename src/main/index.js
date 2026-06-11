@@ -78,10 +78,16 @@ function saveCampaign(campaign) {
 // ─── Sheet ────────────────────────────────────────────────────────────────────
 
 ipcMain.handle('sheet:openDialog', async () => {
-  const result = await dialog.showOpenDialog(mainWindow, {
+  const options = {
     properties: ['openFile'],
     filters: [{ name: 'Spreadsheets', extensions: ['xlsx', 'xls', 'csv'] }]
-  })
+  }
+
+  const owner = mainWindow && !mainWindow.isDestroyed() ? mainWindow : null
+  const result = owner
+    ? await dialog.showOpenDialog(owner, options)
+    : await dialog.showOpenDialog(options)
+
   return result.canceled ? null : result.filePaths[0]
 })
 
