@@ -17,7 +17,8 @@ export default function CampaignMonitor() {
   const { activeCampaignId, navigate } = useApp()
   const [campaign, setCampaign] = useState(null)
   const [queue, setQueue] = useState([])
-  const [stats, setStats] = useState({ total: 0, sent: 0, pending: 0, failed: 0, skipped: 0 })
+  const [stats, setStats] = useState({ total: 0, sent: 0, pending: 0, sending: 0, failed: 0, skipped: 0 })
+  const [actionMsg, setActionMsg] = useState('')
   const [nextSendAt, setNextSendAt] = useState(null)
   const [countdown, setCountdown] = useState(0)
   const [waitMsg, setWaitMsg] = useState('')
@@ -88,7 +89,19 @@ export default function CampaignMonitor() {
   }
 
   async function handleSkip(recipientId) {
+    setActionMsg('')
     await window.api?.queue.skip({ campaignId: activeCampaignId, recipientId })
+    load()
+  }
+
+  async function handleRetry(recipientId) {
+    setActionMsg('')
+    const result = await window.api?.queue.retry({ campaignId: activeCampaignId, recipientId })
+    if (!result?.success) {
+      setActionMsg(result?.error || 'Could not retry this recipient.')
+      return
+    }
+    setWaitMsg('')
     load()
   }
 
@@ -140,7 +153,7 @@ export default function CampaignMonitor() {
       <div className="grid grid-cols-4 gap-4 mb-6">
         {[
           { label: 'Sent', value: stats.sent, color: 'text-green-400' },
-          { label: 'Pending', value: stats.pending, color: 'text-indigo-400' },
+          { label: 'Pending', value: stats.pending + (stats.sending || 0), color: 'text-indigo-400' },
           { label: 'Failed', value: stats.failed, color: 'text-red-400' },
           { label: 'Skipped', value: stats.skipped, color: 'text-yellow-400' }
         ].map(s => (
@@ -164,9 +177,12 @@ export default function CampaignMonitor() {
       {/* Queue table */}
       <div className="card p-0 overflow-hidden">
         <div className="flex items-center justify-between px-5 py-3 border-b border-slate-700">
-          <p className="text-sm font-medium text-slate-300">Recipient Queue</p>
+          <div>
+            <p className="text-sm font-medium text-slate-300">Recipient Queue</p>
+            {actionMsg && <p className="text-xs text-red-400 mt-1">{actionMsg}</p>}
+          </div>
           <div className="flex gap-1">
-            {['all', 'pending', 'sent', 'failed', 'skipped'].map(f => (
+            {['all', 'pending', 'sending', 'sent', 'failed', 'skipped'].map(f => (
               <button
                 key={f}
                 onClick={() => setFilter(f)}
@@ -208,6 +224,14 @@ export default function CampaignMonitor() {
                         className="text-xs text-slate-500 hover:text-yellow-400 transition-colors"
                       >
                         Skip
+                      </button>
+                    )}
+                    {r.status === 'failed' && (
+                      <button
+                        onClick={() => handleRetry(r.id)}
+                        className="text-xs text-indigo-400 hover:text-indigo-300 transition-colors"
+                      >
+                        Retry
                       </button>
                     )}
                   </td>
