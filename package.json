@@ -1,0 +1,42 @@
+{
+  "name": "smart-mail-merger",
+  "version": "1.0.0",
+  "description": "Automated personalized email outreach with interval control via Gmail API",
+  "main": "out/main/index.js",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "start": "electron-vite preview",
+    "build": "electron-vite build",
+    "build:win": "npm run build && electron-builder --win",
+    "build:mac": "npm run build && electron-builder --mac"
+  },
+  "keywords": ["email", "mail-merge", "gmail", "automation", "outreach"],
+  "author": "Parth Garg",
+  "license": "MIT",
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.2.0",
+    "autoprefixer": "^10.4.18",
+    "electron": "^29.1.0",
+    "electron-builder": "^24.9.1",
+    "electron-vite": "^2.0.0",
+    "postcss": "^8.4.35",
+    "tailwindcss": "^3.4.1",
+    "vite": "^5.1.4"
+  },
+  "dependencies": {
+    "electron-store": "^7.0.3",
+    "googleapis": "^144.0.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "uuid": "^9.0.1",
+    "xlsx": "^0.18.5"
+  },
+  "build": {
+    "appId": "com.parthgarg.smart-mail-merger",
+    "productName": "Smart Mail Merger",
+    "files": ["out/**/*"],
+    "directories": {
+      "buildResources": "resources"
+    }
+  }
+}
