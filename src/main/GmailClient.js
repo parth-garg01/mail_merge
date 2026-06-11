@@ -6,6 +6,36 @@ const url = require('url')
 
 const tokenStore = new Store({ name: 'auth-tokens' })
 
+function sendAuthResultPage(res, title, message, ok = true) {
+  const color = ok ? '#166534' : '#991b1b'
+  res.writeHead(200, { 'Content-Type': 'text/html' })
+  res.end(`
+    <html>
+      <body style="font-family:sans-serif;text-align:center;padding:60px">
+        <h2 style="color:${color}">${title}</h2>
+        <p>${message}</p>
+      </body>
+    </html>
+  `)
+}
+
+function escapeHtml(value) {
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+}
+
+function plainTextToHtml(value) {
+  return String(value || '')
+    .replace(/\r\n/g, '\n')
+    .split(/\n{2,}/)
+    .map(paragraph => `<p>${escapeHtml(paragraph).replace(/\n/g, '<br>')}</p>`)
+    .join('')
+}
+
 class GmailClient {
   constructor() {
     this.oauth2Client = null
@@ -30,7 +60,10 @@ class GmailClient {
     return new Promise((resolve, reject) => {
       const authUrl = this.oauth2Client.generateAuthUrl({
         access_type: 'offline',
-        scope: ['https://www.googleapis.com/auth/gmail.send'],
+        scope: [
+          'https://www.googleapis.com/auth/gmail.send',
+          'https://www.googleapis.com/auth/userinfo.email'
+        ],
         prompt: 'consent'
       })
 
@@ -42,12 +75,15 @@ class GmailClient {
         const parsed = url.parse(req.url, true)
         if (parsed.pathname !== '/oauth2callback') return
 
-        res.writeHead(200, { 'Content-Type': 'text/html' })
-        res.end('<html><body style="font-family:sans-serif;text-align:center;padding:60px"><h2>Authentication successful!</h2><p>You can close this window and return to Smart Mail Merger.</p></body></html>')
-        this._server.close()
-        this._server = null
-
         try {
+          if (parsed.query.error) {
+            throw new Error(parsed.query.error_description || parsed.query.error)
+          }
+
+          if (!parsed.query.code) {
+            throw new Error('Google did not return an authorization code.')
+          }
+
           const { tokens } = await this.oauth2Client.getToken(parsed.query.code)
           this.oauth2Client.setCredentials(tokens)
           tokenStore.set('tokens', tokens)
@@ -57,9 +93,25 @@ class GmailClient {
           const { data } = await oauth2.userinfo.get()
           tokenStore.set('userEmail', data.email)
 
+          sendAuthResultPage(
+            res,
+            'Authentication successful!',
+            'You can close this window and return to Smart Mail Merger.'
+          )
           resolve({ success: true, email: data.email })
         } catch (err) {
+          sendAuthResultPage(
+            res,
+            'Authentication failed',
+            err.message || 'Could not complete Google authentication.',
+            false
+          )
           reject(err)
+        } finally {
+          if (this._server) {
+            this._server.close()
+            this._server = null
+          }
         }
       })
 
@@ -85,6 +137,7 @@ class GmailClient {
   }
 
   _buildRawMessage(from, to, subject, body) {
+    const htmlBody = plainTextToHtml(body)
     const msg = [
       `From: ${from}`,
       `To: ${to}`,
@@ -93,7 +146,7 @@ class GmailClient {
       'Content-Type: text/html; charset=utf-8',
       'Content-Transfer-Encoding: base64',
       '',
-      Buffer.from(body).toString('base64')
+      Buffer.from(htmlBody).toString('base64')
     ].join('\r\n')
 
     return Buffer.from(msg)
