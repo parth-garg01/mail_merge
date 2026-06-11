@@ -41,7 +41,6 @@ export default function CampaignMonitor() {
   const [schedForm, setSchedForm] = useState(DEFAULT_SCHED)
   const [schedSaving, setSchedSaving] = useState(false)
   const [schedError, setSchedError] = useState('')
-  const [schedProgress, setSchedProgress] = useState(null) // { done, total } during scheduling
 
   const load = useCallback(async () => {
     if (!activeCampaignId) return
@@ -69,22 +68,11 @@ export default function CampaignMonitor() {
       setWaitMsg(reason)
       setNextSendAt(Date.now() + msToWait)
     }
-    const onSchedProgress = ({ done, total }) => {
-      setSchedProgress({ done, total })
-      load()
-    }
-    const onScheduled = () => {
-      setSchedProgress(null)
-      load()
-    }
-
     window.api?.on('campaign:sent', onSent)
     window.api?.on('campaign:failed', onFailed)
     window.api?.on('campaign:complete', onComplete)
     window.api?.on('campaign:nextSend', onNextSend)
     window.api?.on('campaign:waiting', onWaiting)
-    window.api?.on('campaign:schedule-progress', onSchedProgress)
-    window.api?.on('campaign:scheduled', onScheduled)
 
     return () => {
       window.api?.off('campaign:sent', onSent)
@@ -92,8 +80,6 @@ export default function CampaignMonitor() {
       window.api?.off('campaign:complete', onComplete)
       window.api?.off('campaign:nextSend', onNextSend)
       window.api?.off('campaign:waiting', onWaiting)
-      window.api?.off('campaign:schedule-progress', onSchedProgress)
-      window.api?.off('campaign:scheduled', onScheduled)
     }
   }, [load])
 
@@ -181,8 +167,6 @@ export default function CampaignMonitor() {
   const filtered = filter === 'all' ? queue : queue.filter(r => r.status === filter)
   const isRunning = campaign?.status === 'running'
   const isPaused = campaign?.status === 'paused'
-  const isScheduled = campaign?.status === 'scheduled'
-  const isScheduling = campaign?.status === 'scheduling'
 
   if (!activeCampaignId) {
     return (
@@ -217,12 +201,10 @@ export default function CampaignMonitor() {
           {isPaused && (
             <button onClick={handleResume} className="btn-primary">▶ Resume</button>
           )}
-          {(isRunning || isPaused || isScheduled) && (
-            <button onClick={handleStop} className="btn-danger">
-              {isScheduled ? '✕ Cancel All' : '■ Stop'}
-            </button>
+          {(isRunning || isPaused) && (
+            <button onClick={handleStop} className="btn-danger">■ Stop</button>
           )}
-          {!isScheduling && campaign?.status !== 'completed' && (
+          {campaign?.status !== 'completed' && (
             <button
               onClick={() => { setEditingSchedule(v => !v); setSchedError('') }}
               className="btn-secondary"
@@ -248,26 +230,6 @@ export default function CampaignMonitor() {
           </div>
         ))}
       </div>
-
-      {/* Scheduling progress banner */}
-      {(isScheduling || schedProgress) && (
-        <div className="card mb-6 bg-amber-900/20 border-amber-700/40">
-          <div className="flex items-center justify-between mb-2">
-            <p className="text-amber-300 text-sm font-medium">
-              Scheduling emails in Gmail… {schedProgress ? `${schedProgress.done} / ${schedProgress.total}` : ''}
-            </p>
-            <span className="text-amber-400 text-xs">Do not close the app</span>
-          </div>
-          {schedProgress && (
-            <div className="w-full bg-slate-700 rounded-full h-1.5">
-              <div
-                className="bg-amber-400 h-1.5 rounded-full transition-all duration-300"
-                style={{ width: `${Math.round((schedProgress.done / schedProgress.total) * 100)}%` }}
-              />
-            </div>
-          )}
-        </div>
-      )}
 
       {/* Progress */}
       <div className="card mb-6">
@@ -381,7 +343,7 @@ export default function CampaignMonitor() {
             {actionMsg && <p className="text-xs text-red-400 mt-1">{actionMsg}</p>}
           </div>
           <div className="flex gap-1">
-            {['all', 'pending', 'scheduled', 'sending', 'sent', 'failed', 'skipped'].map(f => (
+            {['all', 'pending', 'sending', 'sent', 'failed', 'skipped'].map(f => (
               <button
                 key={f}
                 onClick={() => setFilter(f)}
@@ -428,7 +390,7 @@ export default function CampaignMonitor() {
                     {r.errorMessage || '—'}
                   </td>
                   <td className="px-4 py-2.5">
-                    {(r.status === 'pending' || r.status === 'scheduled') && (
+                    {r.status === 'pending' && (
                       <button
                         onClick={() => handleSkip(r.id)}
                         className="text-xs text-slate-500 hover:text-yellow-400 transition-colors"

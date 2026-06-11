@@ -248,9 +248,22 @@ ipcMain.handle('campaign:start', async (_, campaignId) => {
   const campaign = campaigns[campaignId]
   if (!campaign) return { success: false, error: 'Campaign not found' }
 
-  campaign.status = 'scheduling'
+  // Pre-calculate an exact send timestamp for every pending recipient so the
+  // UI can show precise times and the runner can wait until the right moment.
+  const queue = sendQueue.getQueue(campaignId)
+  const pending = queue.filter(r => r.status === 'pending')
+  if (pending.length > 0) {
+    const times = scheduleController.calcSendTimes(pending.length, campaign.schedule)
+    for (let i = 0; i < pending.length; i++) {
+      sendQueue.updateStatus(campaignId, pending[i].id, 'pending', {
+        scheduledTime: times[i].toISOString()
+      })
+    }
+  }
+
+  campaign.status = 'running'
   saveCampaign(campaign)
-  scheduleAllEmails(campaignId, campaign)  // fire-and-forget; progress via IPC events
+  runCampaign(campaignId, campaign)
   return { success: true }
 })
 
@@ -283,21 +296,11 @@ ipcMain.handle('campaign:resume', async (_, campaignId) => {
 })
 
 ipcMain.handle('campaign:stop', async (_, campaignId) => {
-  // Legacy timer-based campaign cleanup
   if (activeCampaigns[campaignId]) {
     activeCampaigns[campaignId].stopped = true
     clearTimeout(activeCampaigns[campaignId].timeout)
     delete activeCampaigns[campaignId]
   }
-
-  // Cancel all Gmail-scheduled messages and reset recipients to pending
-  const queue = sendQueue.getQueue(campaignId)
-  const scheduled = queue.filter(r => r.status === 'scheduled' && r.gmailMessageId)
-  for (const r of scheduled) {
-    await gmailClient.cancelScheduled(r.gmailMessageId)
-    sendQueue.updateStatus(campaignId, r.id, 'pending', { scheduledTime: null, gmailMessageId: null })
-  }
-
   const campaigns = configStore.get('campaigns', {})
   if (campaigns[campaignId]) {
     campaigns[campaignId].status = 'stopped'
@@ -316,8 +319,18 @@ ipcMain.handle('campaign:updateSchedule', async (_, { campaignId, schedule }) =>
 
   const ctx = activeCampaigns[campaignId]
   if (ctx && !ctx.stopped) {
+    // Recalculate send times for all still-pending recipients
+    const q = sendQueue.getQueue(campaignId)
+    const pending = q.filter(r => r.status === 'pending')
+    if (pending.length > 0) {
+      const times = scheduleController.calcSendTimes(pending.length, campaign.schedule)
+      for (let i = 0; i < pending.length; i++) {
+        sendQueue.updateStatus(campaignId, pending[i].id, 'pending', {
+          scheduledTime: times[i].toISOString()
+        })
+      }
+    }
     ctx.cfg = buildCfg(campaign.schedule)
-    // Wake up the runner so it immediately re-evaluates the new schedule
     clearTimeout(ctx.timeout)
     ctx.tick?.()
   }
@@ -330,10 +343,7 @@ ipcMain.handle('campaign:updateSchedule', async (_, { campaignId, schedule }) =>
 ipcMain.handle('queue:get', async (_, campaignId) => sendQueue.getQueue(campaignId))
 ipcMain.handle('queue:stats', async (_, campaignId) => sendQueue.getStats(campaignId))
 ipcMain.handle('queue:skip', async (_, { campaignId, recipientId }) => {
-  const queue = sendQueue.getQueue(campaignId)
-  const recipient = queue.find(r => r.id === recipientId)
-  if (recipient?.gmailMessageId) await gmailClient.cancelScheduled(recipient.gmailMessageId)
-  sendQueue.updateStatus(campaignId, recipientId, 'skipped', { errorMessage: 'Manually skipped', gmailMessageId: null })
+  sendQueue.updateStatus(campaignId, recipientId, 'skipped', { errorMessage: 'Manually skipped' })
   return { success: true }
 })
 
@@ -344,25 +354,14 @@ ipcMain.handle('queue:retry', async (_, { campaignId, recipientId }) => {
   const campaigns = configStore.get('campaigns', {})
   const campaign = campaigns[campaignId]
 
-  if (campaign?.status === 'scheduled') {
-    // Re-schedule this one recipient in Gmail ASAP
+  // Assign a new scheduled time for the retried recipient (ASAP)
+  if (campaign) {
     const [nextTime] = scheduleController.calcSendTimes(1, { ...campaign.schedule, startAt: '' })
-    const subject = templateEngine.merge(campaign.subjectTemplate || '', result.recipient.fields)
-    const body = templateEngine.merge(campaign.bodyTemplate || '', result.recipient.fields)
-    try {
-      const msgData = await gmailClient.scheduleSend(result.recipient.email, subject, body, nextTime.toISOString())
-      const updated = sendQueue.updateStatus(campaignId, recipientId, 'scheduled', {
-        scheduledTime: nextTime.toISOString(),
-        gmailMessageId: msgData.id
-      })
-      return { success: true, recipient: updated, stats: sendQueue.getStats(campaignId) }
-    } catch (err) {
-      sendQueue.updateStatus(campaignId, recipientId, 'failed', { errorMessage: err.message })
-      return { success: false, error: err.message }
-    }
+    sendQueue.updateStatus(campaignId, recipientId, 'pending', {
+      scheduledTime: nextTime.toISOString()
+    })
   }
 
-  // Legacy timer-based campaign
   if (campaign && campaign.status !== 'running') {
     campaign.status = 'running'
     saveCampaign(campaign)
@@ -407,9 +406,11 @@ ipcMain.handle('settings:save', async (_, settings) => {
   return { success: true }
 })
 
-// ─── Gmail Scheduler ─────────────────────────────────────────────────────────
+// ─── Campaign Runner ──────────────────────────────────────────────────────────
 
-async function scheduleAllEmails(campaignId, campaign) {
+async function scheduleAllEmails() {} // stub — kept so old references don't crash
+
+async function _unused_scheduleAllEmailsBody(campaignId, campaign) {
   const queue = sendQueue.getQueue(campaignId)
   const pending = queue.filter(r => r.status === 'pending')
 
@@ -460,8 +461,6 @@ async function scheduleAllEmails(campaignId, campaign) {
   notify('campaign:scheduled', { campaignId, successCount, failCount })
 }
 
-// ─── Campaign Runner (legacy timer-based — kept for backwards compat) ─────────
-
 async function runCampaign(campaignId, campaign) {
   if (!activeCampaigns[campaignId]) {
     activeCampaigns[campaignId] = { paused: false, stopped: false, timeout: null, cfg: null, tick: null }
@@ -472,15 +471,7 @@ async function runCampaign(campaignId, campaign) {
   const tick = async () => {
     if (ctx.stopped || ctx.paused) return
 
-    const cfg = ctx.cfg  // always read latest — may be updated by campaign:updateSchedule
-
-    // Wait for scheduled start time
-    if (!scheduleController.isCampaignStartTimeReached(cfg.startAt)) {
-      const msWait = scheduleController.msUntilStartTime(cfg.startAt)
-      notify('campaign:waiting', { campaignId, msToWait: msWait, reason: 'Waiting for scheduled start' })
-      ctx.timeout = setTimeout(tick, Math.min(msWait, 30000))
-      return
-    }
+    const cfg = ctx.cfg  // re-read every tick so updateSchedule takes effect
 
     if (!sendQueue.hasPending(campaignId)) {
       const campaigns = configStore.get('campaigns', {})
@@ -493,15 +484,33 @@ async function runCampaign(campaignId, campaign) {
       return
     }
 
-    if (!scheduleController.shouldSendNow(cfg)) {
-      const msWait = scheduleController.msUntilNextValidWindow(cfg)
-      notify('campaign:waiting', { campaignId, msToWait: msWait, reason: 'Outside sending window' })
-      ctx.timeout = setTimeout(tick, Math.min(msWait, 60000))
-      return
-    }
-
     const recipient = sendQueue.getNext(campaignId)
     if (!recipient) return
+
+    // Wait until the pre-calculated send time for this recipient
+    if (recipient.scheduledTime) {
+      const msUntil = new Date(recipient.scheduledTime) - Date.now()
+      if (msUntil > 1000) {
+        notify('campaign:nextSend', { campaignId, nextSendAt: new Date(recipient.scheduledTime).getTime() })
+        notify('campaign:waiting', { campaignId, msToWait: msUntil, reason: `Scheduled for ${new Date(recipient.scheduledTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` })
+        ctx.timeout = setTimeout(tick, Math.min(msUntil, 30000))
+        return
+      }
+    } else {
+      // Fallback for campaigns started without pre-calculated times (e.g. resumed old campaigns)
+      if (!scheduleController.isCampaignStartTimeReached(cfg.startAt)) {
+        const msWait = scheduleController.msUntilStartTime(cfg.startAt)
+        notify('campaign:waiting', { campaignId, msToWait: msWait, reason: 'Waiting for scheduled start' })
+        ctx.timeout = setTimeout(tick, Math.min(msWait, 30000))
+        return
+      }
+      if (!scheduleController.shouldSendNow(cfg)) {
+        const msWait = scheduleController.msUntilNextValidWindow(cfg)
+        notify('campaign:waiting', { campaignId, msToWait: msWait, reason: 'Outside sending window' })
+        ctx.timeout = setTimeout(tick, Math.min(msWait, 60000))
+        return
+      }
+    }
 
     const subject = templateEngine.merge(campaign.subjectTemplate || '', recipient.fields)
     const body = templateEngine.merge(campaign.bodyTemplate || '', recipient.fields)
@@ -515,27 +524,40 @@ async function runCampaign(campaignId, campaign) {
       logger.log(campaignId, { email: recipient.email, subject, status: 'sent', errorMessage: null })
       notify('campaign:sent', { campaignId, recipient: updated, stats: sendQueue.getStats(campaignId) })
 
-      const intervalMs = scheduleController.addJitter(cfg.intervalMinutes * 60 * 1000)
-      notify('campaign:nextSend', { campaignId, nextSendAt: Date.now() + intervalMs })
-      ctx.timeout = setTimeout(tick, intervalMs)
+      // Wake up at the next recipient's scheduled time (or interval fallback)
+      const nextRecipient = sendQueue.getNext(campaignId)
+      if (nextRecipient?.scheduledTime) {
+        const msUntil = Math.max(1000, new Date(nextRecipient.scheduledTime) - Date.now())
+        notify('campaign:nextSend', { campaignId, nextSendAt: new Date(nextRecipient.scheduledTime).getTime() })
+        ctx.timeout = setTimeout(tick, Math.min(msUntil, 30000))
+      } else {
+        const intervalMs = scheduleController.addJitter(cfg.intervalMinutes * 60 * 1000)
+        notify('campaign:nextSend', { campaignId, nextSendAt: Date.now() + intervalMs })
+        ctx.timeout = setTimeout(tick, intervalMs)
+      }
     } catch (err) {
       if (isTransientError(err)) {
-        // Network/connectivity issue — reset to pending and retry after 2 min
         sendQueue.updateStatus(campaignId, recipient.id, 'pending')
         const retryMs = 2 * 60 * 1000
         notify('campaign:waiting', { campaignId, msToWait: retryMs, reason: 'No internet — will retry automatically' })
         ctx.timeout = setTimeout(tick, retryMs)
       } else {
-        // Permanent failure (bad auth, invalid address, API rejection, etc.)
         const updated = sendQueue.updateStatus(campaignId, recipient.id, 'failed', {
           errorMessage: err.message
         })
         logger.log(campaignId, { email: recipient.email, subject, status: 'failed', errorMessage: err.message })
         notify('campaign:failed', { campaignId, recipient: updated, error: err.message })
 
-        const intervalMs = scheduleController.addJitter(cfg.intervalMinutes * 60 * 1000)
-        notify('campaign:nextSend', { campaignId, nextSendAt: Date.now() + intervalMs })
-        ctx.timeout = setTimeout(tick, intervalMs)
+        const nextRecipient = sendQueue.getNext(campaignId)
+        if (nextRecipient?.scheduledTime) {
+          const msUntil = Math.max(1000, new Date(nextRecipient.scheduledTime) - Date.now())
+          notify('campaign:nextSend', { campaignId, nextSendAt: new Date(nextRecipient.scheduledTime).getTime() })
+          ctx.timeout = setTimeout(tick, Math.min(msUntil, 30000))
+        } else {
+          const intervalMs = scheduleController.addJitter(cfg.intervalMinutes * 60 * 1000)
+          notify('campaign:nextSend', { campaignId, nextSendAt: Date.now() + intervalMs })
+          ctx.timeout = setTimeout(tick, intervalMs)
+        }
       }
     }
   }
